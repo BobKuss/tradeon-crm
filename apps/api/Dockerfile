@@ -8,7 +8,7 @@ COPY apps/api/package.json ./apps/api/
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared/package.json ./packages/shared/
 
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # ─── Stage 2: build ───────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
