@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-red: #a21a19;
+  --brand-dark: #333838;
+  --brand-surface: #f7f7fa;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-surface text-brand-dark antialiased;
+  }
+}

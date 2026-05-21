@@ -11,6 +11,8 @@ import { HealthModule } from './health/health.module';
 import { PortalAuthModule } from './portal-auth/portal-auth.module';
 import { PortalModule } from './portal/portal.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { FinanceModule } from './finance/finance.module';
+import { InvoicesModule } from './invoices/invoices.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { VehiclesModule } from './vehicles/vehicles.module';
 
@@ -37,6 +39,10 @@ import { VehiclesModule } from './vehicles/vehicles.module';
     VehiclesModule,
     // Organizations (CustomerCompany vertical slice)
     OrganizationsModule,
+    // Deal profitability & margin quality engine
+    FinanceModule,
+    // VeriFactu-compliant invoice management
+    InvoicesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

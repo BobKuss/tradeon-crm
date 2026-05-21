@@ -1,0 +1,522 @@
+// TradEon CRM — Prisma Schema
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum MarginQualityScore {
+  CRITICAL
+  LOW
+  MEDIUM
+  GOOD
+  EXCELLENT
+}
+
+enum Role {
+  admin
+  sales
+  finance
+  support
+}
+
+enum CompanyStatus {
+  active
+  inactive
+  prospect
+}
+
+enum CompanySegment {
+  smb       @map("smb")
+  mid_market
+  enterprise
+}
+
+enum DealChannel {
+  email
+  portal
+  phone
+  in_person
+}
+
+enum DealStatus {
+  new
+  in_progress
+  awaiting
+  resolved
+  cancelled
+}
+
+enum DealPriority {
+  low
+  medium
+  high
+}
+
+enum TaskStatus {
+  open
+  in_progress
+  done
+  cancelled
+}
+
+enum InteractionType {
+  email
+  portal_message
+  note
+  call
+}
+
+enum InteractionDirection {
+  inbound
+  outbound
+}
+
+enum InvoiceStatus {
+  issued
+  paid
+  overdue
+  disputed
+}
+
+enum InvoiceCurrency {
+  EUR
+  GBP
+  SEK
+  PLN
+}
+
+/// VeriFactu — tipo de factura según SII/AEAT
+enum TipoFactura {
+  F1 // Factura completa (B2B habitual)
+  F2 // Factura simplificada (ticket/B2C)
+  R1 // Rectificativa – error fundado en derecho
+  R2 // Rectificativa – art. 80.2
+  R3 // Rectificativa – art. 80.3
+  R4 // Rectificativa – art. 80.4
+  R5 // Rectificativa – sin sustitución
+}
+
+/// VeriFactu — estado del registro ante la AEAT
+enum EstadoVeriFactu {
+  pendiente  // aún no enviada
+  enviada    // enviada, esperando respuesta
+  aceptada   // aceptada por AEAT (CSV recibido)
+  rechazada  // rechazada por AEAT (ver respuestaAeat)
+  error      // error técnico en el envío
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+/// Internal staff member — owns assigned companies, deals, and tasks.
+model User {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  name             String
+  initials         String   @db.VarChar(4)
+  role             String                         // job title (e.g. "Sales Director")
+  authRole         Role     @default(sales) @map("auth_role")
+  color            String?  @db.VarChar(7)
+  passwordHash     String   @default("") @map("password_hash")
+  refreshTokenHash String?  @map("refresh_token_hash")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  assignedCompanies            CustomerCompany[]   @relation("CompanyAssignee")
+  assignedDeals                Deal[]              @relation("DealAssignee")
+  assignedTasks                Task[]              @relation("TaskAssignee")
+  interactions                 Interaction[]
+  auditLogs                    AuditLog[]          @relation("UserAuditLogs")
+  dealProfitabilitiesAsBuyer   DealProfitability[] @relation("DealProfitabilityBuyer")
+  dealProfitabilitiesAsSeller  DealProfitability[] @relation("DealProfitabilitySeller")
+
+  @@map("users")
+}
+
+/// B2B customer company (fleet operator, dealer, importer, etc.).
+model CustomerCompany {
+  id             String         @id @default(cuid())
+  name           String
+  country        String
+  city           String?
+  status         CompanyStatus  @default(active)
+  segment        CompanySegment
+  creditLimit    Decimal        @default(0) @db.Decimal(14, 2) @map("credit_limit")
+  balance        Decimal        @default(0) @db.Decimal(14, 2)
+  lastActivityAt DateTime?      @map("last_activity_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
+
+  assignedUserId String? @map("assigned_user_id")
+  assignedUser   User?   @relation("CompanyAssignee", fields: [assignedUserId], references: [id])
+
+  contacts     Contact[]
+  deals        Deal[]
+  interactions Interaction[]
+  invoices     Invoice[]
+  portalUsers  PortalUser[]
+
+  @@map("customer_companies")
+}
+
+/// Individual contact within a customer company.
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  role      String?
+  email     String   @unique
+  phone     String?
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  companyId String          @map("company_id")
+  company   CustomerCompany @relation(fields: [companyId], references: [id])
+
+  deals        Deal[]
+  interactions Interaction[]
+  portalUser   PortalUser?
+
+  @@map("contacts")
+}
+
+/// A sales deal or inquiry (fleet order, price negotiation, dispute, etc.).
+/// One deal references at most one vehicle via vehicleId FK.
+/// Business rules (enforced at application layer):
+///   - An available vehicle can be linked to any deal.
+///   - A reserved vehicle (active deal elsewhere) cannot be double-booked.
+///   - A sold vehicle retains its historical link to the resolved deal.
+///   - An archived vehicle must not appear in active vehicle selection UIs.
+model Deal {
+  id         String       @id @default(cuid())
+  subject    String
+  channel    DealChannel
+  status     DealStatus   @default(new)
+  priority   DealPriority @default(medium)
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+  deletedAt  DateTime?    @map("deleted_at")
+
+  companyId String          @map("company_id")
+  company   CustomerCompany @relation(fields: [companyId], references: [id])
+
+  contactId String?  @map("contact_id")
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  assignedUserId String? @map("assigned_user_id")
+  assignedUser   User?   @relation("DealAssignee", fields: [assignedUserId], references: [id])
+
+  /// Optional FK to Vehicle. Null means no vehicle is linked yet.
+  vehicleId String?  @map("vehicle_id")
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  tasks         Task[]
+  interactions  Interaction[]
+  profitability DealProfitability?
+  invoices      Invoice[]
+
+  @@index([vehicleId], name: "deals_vehicle_id_idx")
+  @@map("deals")
+}
+
+/// Action item or follow-up linked to a deal.
+model Task {
+  id          String     @id @default(cuid())
+  title       String
+  description String?
+  status      TaskStatus @default(open)
+  dueAt       DateTime?  @map("due_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+
+  dealId String @map("deal_id")
+  deal   Deal   @relation(fields: [dealId], references: [id])
+
+  assignedUserId String? @map("assigned_user_id")
+  assignedUser   User?   @relation("TaskAssignee", fields: [assignedUserId], references: [id])
+
+  @@map("tasks")
+}
+
+/// Any recorded touchpoint with a company: email, portal message, call, or note.
+model Interaction {
+  id        String              @id @default(cuid())
+  type      InteractionType
+  direction InteractionDirection?
+  subject   String?
+  body      String
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+
+  companyId String          @map("company_id")
+  company   CustomerCompany @relation(fields: [companyId], references: [id])
+
+  contactId String?  @map("contact_id")
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  dealId String? @map("deal_id")
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  authorId String? @map("author_id")
+  author   User?   @relation(fields: [authorId], references: [id])
+
+  @@map("interactions")
+}
+
+/// Financial invoice issued to a customer company — VeriFactu compliant.
+model Invoice {
+  id          String          @id
+  description String
+  /// Importe total (base + cuota IVA). Se mantiene para compatibilidad.
+  amount      Decimal         @db.Decimal(14, 2)
+  currency    InvoiceCurrency @default(EUR)
+  status      InvoiceStatus   @default(issued)
+  issuedAt    DateTime        @map("issued_at") @db.Date
+  dueAt       DateTime        @map("due_at") @db.Date
+  paidAt      DateTime?       @map("paid_at") @db.Date
+
+  // ─── VeriFactu ────────────────────────────────────────────────────────────
+  /// Serie de facturación (p.ej. "A", "B"). Junto con numero forma la clave única VeriFactu.
+  serie              String          @default("A")
+  /// Número secuencial dentro de la serie.
+  numero             Int
+  /// Tipo de factura según categorías AEAT.
+  tipoFactura        TipoFactura     @default(F1) @map("tipo_factura")
+  /// Base imponible (neto sin IVA).
+  baseImponible      Decimal         @db.Decimal(14, 2) @map("base_imponible")
+  /// Tipo de IVA aplicado (21, 10, 4 o 0).
+  tipoIVA            Float           @default(21)       @map("tipo_iva")
+  /// Cuota de IVA (base × tipo / 100).
+  cuotaIVA           Decimal         @db.Decimal(14, 2) @map("cuota_iva")
+  /// NIF del emisor (TradEon).
+  nifEmisor          String          @map("nif_emisor")
+  /// Razón social del emisor.
+  nombreEmisor       String          @map("nombre_emisor")
+  /// NIF del destinatario (cliente). Opcional en F2.
+  nifDestinatario    String?         @map("nif_destinatario")
+  /// Nombre o razón social del destinatario.
+  nombreDestinatario String?         @map("nombre_destinatario")
+  /// Huella SHA-256 de esta factura (cadena VeriFactu).
+  huella             String?
+  /// Huella de la factura anterior en la cadena.
+  huellaAnterior     String?         @map("huella_anterior")
+  /// Estado de registro ante la AEAT.
+  estadoVeriFactu    EstadoVeriFactu @default(pendiente) @map("estado_verifactu")
+  /// Código Seguro de Verificación devuelto por AEAT (solo si aceptada).
+  csvAeat            String?         @map("csv_aeat")
+  /// Fecha y hora de envío al servicio AEAT.
+  fechaEnvioAeat     DateTime?       @map("fecha_envio_aeat")
+  /// Respuesta JSON completa de AEAT (para diagnóstico).
+  respuestaAeat      Json?           @map("respuesta_aeat")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  companyId String          @map("company_id")
+  company   CustomerCompany @relation(fields: [companyId], references: [id])
+
+  dealId String? @map("deal_id")
+  deal   Deal?   @relation(fields: [dealId], references: [id])
+
+  @@unique([serie, numero], name: "invoices_serie_numero_unique")
+  @@index([companyId], name: "invoices_company_id_idx")
+  @@index([status], name: "invoices_status_idx")
+  @@index([estadoVeriFactu], name: "invoices_estado_verifactu_idx")
+  @@map("invoices")
+}
+
+/// Portal user account — one per business contact, linked to their company.
+/// Fully separate from internal staff (User model).
+model PortalUser {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String
+  passwordHash     String    @map("password_hash")
+  refreshTokenHash String?   @map("refresh_token_hash")
+  /// Placeholder field for future MFA implementation (TOTP / SMS).
+  mfaEnabled       Boolean   @default(false) @map("mfa_enabled")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  companyId String          @map("company_id")
+  company   CustomerCompany @relation(fields: [companyId], references: [id])
+
+  /// Optional link to a Contact record for richer profile data.
+  contactId String?  @unique @map("contact_id")
+  contact   Contact? @relation(fields: [contactId], references: [id])
+
+  auditLogs PortalAuditLog[]
+
+  @@map("portal_users")
+}
+
+/// Immutable audit trail for all staff CRM actions.
+/// Append-only — no update/delete permissions should be granted on this table.
+model AuditLog {
+  id         String   @id @default(cuid())
+  /// High-level action: login | logout | create | update | delete | status_change | view
+  action     String
+  /// Logical entity category: user | customer | contact | deal | task
+  entityType String?  @map("entity_type")
+  /// Primary key of the affected record
+  entityId   String?  @map("entity_id")
+  /// Free-form context: old/new values, diff summary, extra identifiers
+  metadata   Json?
+  /// Origin: staff_ui | portal | system
+  source     String   @default("staff_ui") @map("source")
+  ipAddress  String?  @map("ip_address")
+  /// Denormalised so history survives user deletion
+  actorEmail String   @map("actor_email")
+  actorId    String?  @map("actor_id")
+  actor      User?    @relation("UserAuditLogs", fields: [actorId], references: [id])
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([actorId],              name: "audit_logs_actor_idx")
+  @@index([entityType, entityId], name: "audit_logs_entity_idx")
+  @@index([action],               name: "audit_logs_action_idx")
+  @@index([createdAt(sort: Desc)], name: "audit_logs_created_at_idx")
+  @@map("audit_logs")
+}
+
+// ─── Vehicle Inventory ────────────────────────────────────────────────────────
+
+enum VehicleStatus {
+  draft
+  available
+  reserved
+  sold
+  archived
+}
+
+enum FuelType {
+  petrol
+  diesel
+  electric
+  hybrid
+  phev
+  lpg
+  other
+}
+
+enum VehicleTransmission {
+  manual
+  automatic
+  semi_automatic
+}
+
+/// Vehicle in TradEon's physical stock.
+/// Availability is derived from linked Deal status (application layer):
+///   available  — no linked non-cancelled Deal
+///   reserved   — linked to a Deal with status new / in_progress / awaiting
+///   sold       — linked only to resolved Deal(s)
+///   archived   — manually archived; excluded from active selection UIs
+model Vehicle {
+  id           String              @id @default(cuid())
+  stockNumber  String              @unique @map("stock_number")
+  vin          String?             @unique
+  make         String
+  model        String
+  variant      String?
+  year         Int
+  mileage      Int
+  fuelType     FuelType            @map("fuel_type")
+  transmission VehicleTransmission
+  color        String
+  price        Decimal             @db.Decimal(14, 2)
+  currency     String              @default("EUR") @db.Char(3)
+  status       VehicleStatus       @default(draft)
+  location     String
+  description  String?
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  /// All deals that have ever referenced this vehicle.
+  /// At most one active (non-resolved) deal should exist at any time — enforced in app code.
+  deals Deal[]
+
+  @@index([status],              name: "vehicles_status_idx")
+  @@index([make],                name: "vehicles_make_idx")
+  @@index([year],                name: "vehicles_year_idx")
+  @@map("vehicles")
+}
+
+/// Per-deal profitability, margin quality, and commission calculation record.
+/// One record per deal; calculated fields are always kept in sync on write.
+model DealProfitability {
+  id     String @id @default(cuid())
+  dealId String @unique @map("deal_id")
+  deal   Deal   @relation(fields: [dealId], references: [id])
+
+  // ─── Input: cost fields ────────────────────────────────────────────────────
+  purchasePriceNet      Decimal @default(0) @db.Decimal(14, 2) @map("purchase_price_net")
+  salePriceNet          Decimal @default(0) @db.Decimal(14, 2) @map("sale_price_net")
+  purchaseTransportCost Decimal @default(0) @db.Decimal(14, 2) @map("purchase_transport_cost")
+  salesTransportCost    Decimal @default(0) @db.Decimal(14, 2) @map("sales_transport_cost")
+  preparationCost       Decimal @default(0) @db.Decimal(14, 2) @map("preparation_cost")
+  workshopCost          Decimal @default(0) @db.Decimal(14, 2) @map("workshop_cost")
+  documentsCost         Decimal @default(0) @db.Decimal(14, 2) @map("documents_cost")
+  registrationCost      Decimal @default(0) @db.Decimal(14, 2) @map("registration_cost")
+  importExportCost      Decimal @default(0) @db.Decimal(14, 2) @map("import_export_cost")
+  warrantyRiskCost      Decimal @default(0) @db.Decimal(14, 2) @map("warranty_risk_cost")
+  bankCost              Decimal @default(0) @db.Decimal(14, 2) @map("bank_cost")
+  marketplaceCost       Decimal @default(0) @db.Decimal(14, 2) @map("marketplace_cost")
+  otherPurchaseCosts    Decimal @default(0) @db.Decimal(14, 2) @map("other_purchase_costs")
+  otherSalesCosts       Decimal @default(0) @db.Decimal(14, 2) @map("other_sales_costs")
+
+  // ─── People ────────────────────────────────────────────────────────────────
+  buyerUserId  String? @map("buyer_user_id")
+  sellerUserId String? @map("seller_user_id")
+  buyerUser    User?   @relation("DealProfitabilityBuyer",  fields: [buyerUserId],  references: [id])
+  sellerUser   User?   @relation("DealProfitabilitySeller", fields: [sellerUserId], references: [id])
+
+  // ─── Calculated results (always recomputed on write) ───────────────────────
+  profitBeforeCommission   Decimal            @default(0) @db.Decimal(14, 2) @map("profit_before_commission")
+  marginPercent            Decimal            @default(0) @db.Decimal(8, 2)  @map("margin_percent")
+  marginQualityScore       MarginQualityScore @default(CRITICAL)             @map("margin_quality_score")
+  commissionPoolPercentage Decimal            @default(0) @db.Decimal(5, 2)  @map("commission_pool_percentage")
+  commissionPoolAmount     Decimal            @default(0) @db.Decimal(14, 2) @map("commission_pool_amount")
+  buyerCommissionAmount    Decimal            @default(0) @db.Decimal(14, 2) @map("buyer_commission_amount")
+  sellerCommissionAmount   Decimal            @default(0) @db.Decimal(14, 2) @map("seller_commission_amount")
+  totalCommissionAmount    Decimal            @default(0) @db.Decimal(14, 2) @map("total_commission_amount")
+  finalNetProfit           Decimal            @default(0) @db.Decimal(14, 2) @map("final_net_profit")
+  finalMarginPercent       Decimal            @default(0) @db.Decimal(8, 2)  @map("final_margin_percent")
+
+  approvalRequired Boolean @default(false) @map("approval_required")
+  approvalReason   String? @map("approval_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@index([dealId], name: "deal_profitability_deal_id_idx")
+  @@map("deal_profitability")
+}
+
+/// Audit trail for portal access events (logins and key data views).
+model PortalAuditLog {
+  id         String   @id @default(cuid())
+  /// Event name, e.g. "login", "view_account", "view_invoices", "view_inquiry".
+  event      String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  portalUserId String     @map("portal_user_id")
+  portalUser   PortalUser @relation(fields: [portalUserId], references: [id])
+
+  @@index([portalUserId], name: "portal_audit_logs_user_idx")
+  @@index([createdAt(sort: Desc)], name: "portal_audit_logs_created_at_idx")
+  @@map("portal_audit_logs")
+}

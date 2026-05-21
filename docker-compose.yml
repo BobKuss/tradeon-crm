@@ -1,0 +1,65 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tradeon_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tradeon
+      POSTGRES_PASSWORD: tradeon_dev
+      POSTGRES_DB: tradeon_crm
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tradeon -d tradeon_crm']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Uncomment when adding Redis support ──────────────────────────────────
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: tradeon_redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - '6379:6379'
+  #   volumes:
+  #     - redis_data:/data
+  #   healthcheck:
+  #     test: ['CMD', 'redis-cli', 'ping']
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # ─── Full-stack (uncomment to run everything via Docker) ──────────────────
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: apps/api/Dockerfile
+  #   container_name: tradeon_api
+  #   restart: unless-stopped
+  #   env_file: apps/api/.env
+  #   ports:
+  #     - '3001:3001'
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #
+  # web:
+  #   build:
+  #     context: .
+  #     dockerfile: apps/web/Dockerfile
+  #   container_name: tradeon_web
+  #   restart: unless-stopped
+  #   env_file: apps/web/.env.local
+  #   ports:
+  #     - '3000:3000'
+  #   depends_on:
+  #     - api
+
+volumes:
+  postgres_data:
+  # redis_data:
