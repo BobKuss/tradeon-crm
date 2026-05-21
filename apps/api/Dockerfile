@@ -28,10 +28,15 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# root node_modules contains the .pnpm store with actual package files
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/api/dist ./dist
-COPY --from=builder /app/apps/api/prisma ./prisma
-COPY --from=builder /app/apps/api/package.json ./package.json
+# api node_modules contains symlinks into the .pnpm store
+COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
+
+WORKDIR /app/apps/api
 
 EXPOSE 3001
 
